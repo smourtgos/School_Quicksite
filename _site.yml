@@ -1,0 +1,8 @@
+navbar:
+  title: Quick Site for School
+  left:
+  - text: Click Here for Different Presentations
+    href: content.html
+output:
+  html_document:
+    theme: flatly

@@ -1,0 +1,461 @@
+---
+title: "Text Mining/Analystics"
+author: "Scott Mourtgos"
+date: "4/17/2022"
+output: slidy_presentation
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+#load packages
+library(rtweet)
+library(vader)
+library(tidyverse)
+library(tidytext)
+library(tidyr)
+library(ggplot2)
+library(dplyr)
+library(knitr)
+library(readxl)
+library(igraph)
+library(ggraph)
+library(ngramr)
+library(ggpubr)
+library(ggthemes)
+```
+
+# Text Mining
+
+- What is it?
+- Why would we be interested in text data?
+- Can we really represent words with numbers?
+
+---
+
+## Let's look at an Example
+
+Narrative Policy Framework
+
+"Narratives are the lifeblood of politics. Politicians, political strategists, and media reports understand that how a story is rendered is as important to policy success...as are which actions are undertaken" (Shanahan et al., 2017, p. 173).
+
+The NPF was developed with the aim of recognizing that narratives are socially constructed, yet also have the ability to be measured empirically and their influence and outcomes analyzed and tested.
+
+---
+
+## Narrative Strategies of Democrats and Republicans in the House of Representatives - Justice in Policing Act of 2020
+
+- Following the death of George Floyd on May 25th, 2020, protests and riots spread across the US.
+- Over the following months, politicians weighted in on Floyd's death, policing, and police reform.
+- The primary proposed legislation at the national level was the Justice in Policing Act, drafted in the U.S. House of Representatives by Karen Bass (CA-D) and Jerrold Nadler (NY-D).
+- The bill was introducted in the HoR on June 8th and passed along party lines on June 25th, never receiving a vote in the Senate.
+
+---
+
+## What were the different narratives, and narrative stragegies, used by the opposing political parties?
+
+- Let's analyze the rhetoric of all the US House of Representatives on Twitter from May 25th (the date of Floyd's death) through the end of June 2020.
+- Obtain Twitter handles for all the 116th Congress HoR. 
+- Party affiliation was added to the database for comparison purposes between the Democrat and Republican parties.
+- We the dataframe into R and remove the "@" symbol from the list of handles.
+- We then use the rtweet package to download each Representatives' tweets from the desire timeframe and combine those with the handle dataframe.
+- Finally, we create a regular expression object for removal of special symbols to clean the data, and create another object to search for tweets specifically talking about policing.
+
+```{r}
+tmls <- read.csv("tmls.csv", header = TRUE)
+tmls$created_at <- as.POSIXct(tmls$created_at)
+
+hr_all <- read_excel("116th_HouseRep.xlsx")
+
+handles <-
+  hr_all %>% select(Twitter_Handle, Party, State) %>% 
+  mutate(Handle_stripped = tolower(str_remove_all(Twitter_Handle, "@")))
+
+url_regex <- "http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+"
+
+police_var <- c("police","cop","cops","law enforcement","policing")
+```
+
+---
+
+## Focusing Event (MSA)
+
+Before analyzing Representatives' rhetoric, we see if policing is a topic commonly spoken about prior to Floyd's death.
+
+```{r}
+tmls_all <- 
+  tmls %>% 
+  dplyr::filter(created_at > '2019-05-24' & created_at < '2020-06-30') %>% 
+  mutate(text = str_remove_all(text, url_regex),
+         text = str_remove_all(text, "#\\S+"),
+         text = str_remove_all(text, "@\\S+"),
+         text = str_remove_all(text, "\\n"),
+         text = str_remove_all(text, '[\U{1f100}-\U{9f9FF}]'),
+         text = str_remove_all(text, '&amp;'),
+         text = str_remove_all(text, pattern = ' - '),
+         text = str_remove_all(text, pattern = '[\u{2000}-\u{3000}]'),
+         text = str_remove_all(text, pattern = '[^\x01-\x7F]'),
+         text = str_squish(text),
+         screen_name = tolower(screen_name)) %>% 
+  left_join(handles, by = c('screen_name' = 'Handle_stripped')) %>%
+  select(name, Party, State, created_at, text)
+
+police_df_all <- tmls_all[grep(police_var, tmls_all$text),] #<results in 4,041 tweets
+
+#plot across time by party for an entire year beforehand to show window of opportunity
+ggplot(police_df_all, aes(x = created_at, fill = Party)) +
+  geom_histogram(position = "identity", bins = 20, show.legend = FALSE) +
+  facet_wrap(~Party, ncol = 1)
+```
+
+---
+
+# Restrict Rhetoric to May 25th - June 30th and Plot
+
+- What differences do we see between parties?
+
+```{r}
+tmls_new <- 
+  tmls %>% 
+  dplyr::filter(created_at > '2020-05-24' & created_at < '2020-06-30') %>% 
+  mutate(text = str_remove_all(text, url_regex),
+         text = str_remove_all(text, "#\\S+"),
+         text = str_remove_all(text, "@\\S+"),
+         text = str_remove_all(text, "\\n"),
+         text = str_remove_all(text, '[\U{1f100}-\U{9f9FF}]'),
+         text = str_remove_all(text, '&amp;'),
+         text = str_remove_all(text, pattern = ' - '),
+         text = str_remove_all(text, pattern = '[\u{2000}-\u{3000}]'),
+         text = str_remove_all(text, pattern = '[^\x01-\x7F]'),
+         text = str_squish(text),
+         screen_name = tolower(screen_name)) %>% 
+  left_join(handles, by = c('screen_name' = 'Handle_stripped')) %>%
+  select(name, Party, State, created_at, text)
+
+police_df <- tmls_new[grep(police_var, tmls_new$text),] #<results in 3,290 tweets
+
+ggplot(police_df, aes(x = created_at, fill = Party)) +
+  geom_histogram(position = "identity", bins = 20, show.legend = FALSE) +
+  facet_wrap(~Party, ncol = 1)
+```
+
+---
+
+## Let's Start Looking at Words
+
+Bi-grams Network
+
+```{r}
+#Extract bigrams
+police_bigrams <- 
+  police_df %>% 
+  unnest_tokens(bigram, text, token = "ngrams", n = 2)
+
+#Separate the words in the bigrams for network analysis
+police_bigrams_separated <- police_bigrams %>%
+  separate(bigram, c("word1", "word2"), sep = " ")
+
+#Remove stopwords
+police_bigrams_filtered <- police_bigrams_separated %>%
+  filter(!word1 %in% stop_words$word) %>%
+  filter(!word2 %in% stop_words$word)
+
+#Calculate a bigram count
+police_bigram_counts <- police_bigrams_filtered %>% 
+  count(word1, word2, sort = TRUE)
+
+#Filter for only bigram combinations that occur greater than 30 times.
+police_bigram_graph <- police_bigram_counts %>%
+  filter(n > 30) %>%
+  graph_from_data_frame()
+
+#plot
+set.seed(58)
+
+a <- grid::arrow(type = "closed", length = unit(.15, "inches"))
+
+ggraph(police_bigram_graph, layout = "fr") +
+  geom_edge_link(aes(edge_alpha = n), show.legend = FALSE,
+                 arrow = a, end_cap = circle(.07, 'inches')) +
+  geom_node_point(color = "lightblue", size = 5) +
+  geom_node_text(aes(label = name), vjust = 1.1, hjust = 1.1) +
+  theme_void()
+```
+
+---
+
+## Looking at Words
+
+Most Frequent Bi-Grams by Party
+
+```{r}
+#First, we rejoin stopword filtered bigrams
+police_bigrams_united <- police_bigrams_filtered %>%
+  unite(bigram, word1, word2, sep = " ")
+
+police_bigram_tf_idf <- police_bigrams_united %>%
+  count(Party, bigram) %>%
+  bind_tf_idf(bigram, Party, n) %>%
+  arrange(desc(tf_idf))
+
+#plot
+police_bigram_tf_idf %>%
+  arrange(desc(tf_idf)) %>%
+  mutate(bigram = factor(bigram, levels = rev(unique(bigram)))) %>% 
+  group_by(Party) %>% 
+  top_n(20) %>% 
+  ungroup() %>%
+  ggplot(aes(bigram, tf_idf, fill = Party)) +
+  geom_col(show.legend = FALSE) +
+  labs(x = NULL, y = "tf-idf") +
+  facet_wrap(~Party, ncol = 2, scales = "free") +
+  coord_flip()
+```
+
+--- 
+
+## Looking at Words
+
+Tri-Grams Network
+
+```{r}
+#Extract trigrams
+police_trigrams <- 
+  police_df %>% 
+  unnest_tokens(bigram, text, token = "ngrams", n = 3)
+
+#Separate the words in the bigrams for network analysis
+police_trigrams_separated <- police_trigrams %>%
+  separate(bigram, c("word1", "word2", "word3"), sep = " ")
+
+#Remove stopwords
+police_trigrams_filtered <- police_trigrams_separated %>%
+  filter(!word1 %in% stop_words$word) %>%
+  filter(!word2 %in% stop_words$word) %>% 
+  filter(!word3 %in% stop_words$word)
+
+#Calculate a trigram count
+police_trigram_counts <- police_trigrams_filtered %>% 
+  count(word1, word2, word3, sort = TRUE)
+
+#Filter for only trigram combinations that occur greater than 30 times.
+police_trigram_graph <- police_trigram_counts %>%
+  filter(n > 15) %>%
+  graph_from_data_frame()
+
+#plot
+set.seed(58)
+
+a <- grid::arrow(type = "closed", length = unit(.15, "inches"))
+
+ggraph(police_trigram_graph, layout = "fr") +
+  geom_edge_link(aes(edge_alpha = n), show.legend = FALSE,
+                 arrow = a, end_cap = circle(.07, 'inches')) +
+  geom_node_point(color = "lightblue", size = 5) +
+  geom_node_text(aes(label = name), vjust = 1.1, hjust = 1.1) +
+  theme_void()
+
+```
+
+---
+
+## Looking at Words
+
+Most Frequent Tri-Grams by Party
+
+```{r}
+#First, we rejoin stopword filtered trigrams
+police_trigrams_united <- police_trigrams_filtered %>%
+  unite(bigram, word1, word2, word3, sep = " ")
+
+police_trigram_tf_idf <- police_trigrams_united %>%
+  count(Party, bigram) %>%
+  bind_tf_idf(bigram, Party, n) %>%
+  arrange(desc(tf_idf))
+
+#plot
+police_trigram_tf_idf %>%
+  arrange(desc(tf_idf)) %>%
+  mutate(bigram = factor(bigram, levels = rev(unique(bigram)))) %>% 
+  group_by(Party) %>% 
+  top_n(20) %>% 
+  ungroup() %>%
+  ggplot(aes(bigram, tf_idf, fill = Party)) +
+  geom_col(show.legend = FALSE) +
+  labs(x = NULL, y = "tf-idf") +
+  facet_wrap(~Party, ncol = 2, scales = "free") +
+  coord_flip()
+```
+
+---
+
+What does the above suggest?
+
+Which party is using an angel shift? Devil shift?
+
+---
+
+## Sentiment Analysis
+
+Both parties frequently refer to the Justice in Policing Act, suggesting that their different framings and narratives are in response to the proposed legislation. Further confirmation that different framings and narratives are in response to the proposed legislation can be achieved through sentiment analysis.
+
+When individuals take language in, they use their understanding of the emotional intent of words to infer whether a piece of language has a positive or negative valence. Sentiment analysis tries to estimate this human understanding of positive or negative valence.
+
+---
+
+```{r}
+#First, we create an error catcher to return NA for a tweet that VADER cannot process.
+vader_compound <- function(x) {
+  y <- tryCatch(tail(get_vader(x),5)[1], error = function(e) NA)
+  return(y)
+}
+
+#VADER calculates sentiment scores.
+vader_scores <-
+  police_df %>% 
+  mutate(vader_scores = as.numeric(sapply(text, vader_compound )))
+
+#Now we can calculate the 10 most positive senators on Twitter, when talking about policing.
+vader_mps <-
+  vader_scores %>%
+  group_by(name, Party) %>%
+  summarise(mean_score  = mean(vader_scores, na.rm = TRUE), .groups = 'drop') %>%
+  top_n(10, mean_score) %>%
+  arrange(desc(mean_score))
+
+vader_mps
+```
+
+---
+
+Does this pattern hold across all representatives?
+```{r}
+vader_temp <- vader_scores %>% dplyr::filter(Party %in% c('D', 'R'))
+
+ggplot(vader_temp) + 
+  geom_boxplot(aes(x=Party, y = vader_scores)) +
+  ylab('VADER score') +
+  ggtitle('VADER scores for Representative tweets across the primary US political parties')
+```
+
+---
+
+How about sentiment as a function of time? What interesting pattern do we see with Republicans?
+
+```{r}
+vader_time <- 
+  vader_temp %>% 
+  mutate(Date = as.Date(created_at)) %>% 
+  group_by(Party, Date) %>% 
+  summarise(mean_score = mean(vader_scores, na.rm = TRUE))
+
+ggplot(vader_time, aes(x = Date, y = mean_score, group = Party, colour = Party)) +
+  geom_line(alpha = 0.5) +
+  geom_smooth(se = FALSE) +
+  ylab('VADER score') +
+  ggtitle('Average VADER score by day, by party')   #Interesting to note that June 8th is when act was introduced. That's when R above 0.
+```
+
+---
+
+## Let's take a step back
+
+One of the most simple approaches: Word frequencies across time.
+
+Thoughts on "Prevalence of Prejudice-Denoting Words in News Media Discourse: A Chronological Analysis," Rozado et al. 2021.
+
+---
+
+## Public Opinion On Police Use of Force
+```{r}
+rm(list = ls())
+
+load(file="ACJS_2022_2.0.RData")
+ggarrange(polhitok.plot,polescap.plot,polattak.plot,reasonable.plot, labels = c("A","B","C","D"))
+```
+
+---
+
+## What Can Explain This?
+
+```{r}
+ggarrange(po_v_consdec.plot,po_v_fbi.plot,po_v_pcrimes.plot,po_v_washpost.plot, labels = c("A","B","C","D"))
+```
+
+---
+
+## What Can Changes in Language Possibly Tell Us?
+
+```{r}
+ggram("police violence")
+```
+
+---
+
+## Information Environment?
+
+So what happens when we include media with this change in language?
+
+```{r}
+all_scaled.plot
+```
+
+---
+
+## Granger Causality
+
+  Granger-Causal Direction       Significance
+----------------------------  -----------------
+  News -> Public Opinion         *p*=**.02**
+  Public Opinion -> News          *p*=.99
+  
+## AutoRegressive Distributive Lag Model
+
+  Variable        Significance
+------------    ----------------
+  news.lag.1        *p*=**.04**
+  news.lag.2        *p*=.23
+  news.lag.2        *p*=.35
+  consdec.1         *p*=.48
+  consdec.2         *p*=.45
+  consdec.3         *p*=.06
+  ois.lag.1         *p*=.23
+  ois.lag.2         *p*=.90
+  ois.lag.3         *p*=.38
+  auto.reg.         *p*=.26
+  
+---
+
+## Let's Try Some Other Words/Phrases
+
+package: ngramr
+command: ggram()
+
+---
+
+## Topic Modeling
+
+"The Rhetoric of De-Policing," Mourtgos & Adams, (2019).
+
+---
+
+## Testing Hypotheses
+
+"Improving Victim Engagement and Officer Response in Rape Investigations," Mourtgos, Adams, & Mastracci, (2021).
+
+---
+
+## Other Methods
+
+- Clustering
+- Supervised Classification
+- Text as Outcome
+- Text as Treatment
+
+---
+
+## Other Reading
+
+_The_ books to read are:
+
+- "Text as Data" -Grimmer, Robert, & Stewart (2022)
+- "Text Mining in Practice with R" -Kwartler (2017)

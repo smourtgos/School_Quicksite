@@ -1,0 +1,11 @@
+---
+title: "Main Page"
+author: "Scott Mourtgos"
+output:
+  html_document:
+    df_print: paged
+---
+
+Select a presentation below.
+
+* [Text Mining Presentation](content/Text_Mining_Presentation.html)
